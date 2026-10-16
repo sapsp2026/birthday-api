@@ -123,7 +123,6 @@ async function sendBirthday(data) {
 */
   
 /*
-  
   const caption =
     "🎉 SELAMAT HARI LAHIR! 🎉\n\n" +
     "Tarikh: " + tarikh + "\n\n" +
@@ -132,7 +131,7 @@ async function sendBirthday(data) {
     "Semoga dikurniakan kesihatan yang baik, " +
     "kebahagiaan dan rezeki yang berkat.\n\n" +
     "Ikhlas daripada Dekan dan Seluruh Warga SAPSP.";
-*/
+
   log[key] = {
     nama,
     tarikh,
@@ -186,6 +185,8 @@ async function sendBirthday(data) {
     throw error;
   }
 }
+
+*/
 
 // --------------------------------------------------
 // BARISAN PERMINTAAN
