@@ -188,6 +188,57 @@ async function sendBirthday(data) {
 
 */
 
+    log[key] = {
+    nama,
+    tarikh,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+  await writeLog(log);
+
+  try {
+    let result;
+
+    if (!poster) {
+      throw new Error("URL poster tidak tersedia.");
+    }
+
+    result = await sock.sendMessage(GROUP_JID, {
+      image: { url: poster }
+    });
+
+    const latestLog = await readLog();
+    latestLog[key] = {
+      nama,
+      tarikh,
+      status: "sent",
+      messageId: result?.key?.id || "",
+      createdAt: new Date().toISOString()
+    };
+    await writeLog(latestLog);
+
+    console.log("Poster dihantar:", nama, result?.key?.id);
+
+    return {
+      status: "sent",
+      messageId: result?.key?.id || ""
+    };
+
+  } catch (error) {
+    const latestLog = await readLog();
+    latestLog[key] = {
+      nama,
+      tarikh,
+      status: "failed",
+      error: error.message,
+      createdAt: new Date().toISOString()
+    };
+    await writeLog(latestLog);
+
+    throw error;
+  }
+}
+
 // --------------------------------------------------
 // BARISAN PERMINTAAN
 // --------------------------------------------------
