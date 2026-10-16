@@ -1,11 +1,9 @@
-
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason
 } from "@whiskeysockets/baileys";
 
 import pino from "pino";
-import qrcode from "qrcode-terminal";
 import http from "node:http";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
@@ -131,8 +129,6 @@ async function sendBirthday(data) {
     "kebahagiaan dan rezeki yang berkat.\n\n" +
     "Ikhlas daripada warga SAPSP.";
 
-  // Tandakan pending sebelum menghantar supaya permintaan
-  // bertindih tidak menghantar mesej yang sama serentak.
   log[key] = {
     nama,
     tarikh,
@@ -145,9 +141,6 @@ async function sendBirthday(data) {
     let result;
 
     if (poster) {
-      // Pautan imej mesti boleh dicapai oleh WhatsApp Web.
-      // Jika pautan gagal, kod tidak menghantar mesej kedua
-      // secara automatik untuk mengelakkan mesej berganda.
       result = await sock.sendMessage(GROUP_JID, {
         image: { url: poster },
         caption
@@ -210,7 +203,6 @@ async function processQueue() {
         item.reject(error);
       }
 
-      // Jeda ringkas antara penghantaran.
       await new Promise(resolve => setTimeout(resolve, 1500));
     }
   } finally {
@@ -324,7 +316,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // --------------------------------------------------
-// SAMBUNGAN WHATSAPP
+// SAMBUNGAN WHATSAPP (PAIRING CODE)
 // --------------------------------------------------
 
 async function startBot() {
@@ -337,19 +329,32 @@ async function startBot() {
     const socket = makeWASocket({
       auth: state,
       logger: pino({ level: "silent" }),
-      markOnlineOnConnect: false
+      markOnlineOnConnect: false,
+      printQRInTerminal: false // Tutup kod QR terminal
     });
 
     sock = socket;
     socket.ev.on("creds.update", saveCreds);
 
-    socket.ev.on("connection.update", async update => {
-      const { connection, lastDisconnect, qr } = update;
+    // Permintaan Pairing Code jika belum berdaftar/berpasangan
+    if (!socket.authState.creds.registered) {
+      const phoneNumber = "60125729489"; // Nombor telefon anda
+      
+      setTimeout(async () => {
+        try {
+          console.log("Sedang menjana Pairing Code untuk nombor:", phoneNumber);
+          let code = await socket.requestPairingCode(phoneNumber);
+          console.log(`\n\n========================================`);
+          console.log(` KOD PAIRING WHATSAPP ANDA: ${code}`);
+          console.log(`========================================\n\n`);
+        } catch (err) {
+          console.error("Gagal mendapatkan Pairing Code:", err);
+        }
+      }, 4000);
+    }
 
-      if (qr) {
-        console.log("Imbas QR ini menggunakan WhatsApp:");
-        qrcode.generate(qr, { small: true });
-      }
+    socket.ev.on("connection.update", async update => {
+      const { connection, lastDisconnect } = update;
 
       if (connection === "open") {
         isConnected = true;
@@ -381,7 +386,7 @@ async function startBot() {
           }, 3000);
         } else {
           console.error(
-            "Sesi log keluar. Sambungkan semula dengan mengimbas QR."
+            "Sesi log keluar. Sila padam folder auth_info_baileys atau set semula untuk pairing baru."
           );
         }
       }
