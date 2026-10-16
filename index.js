@@ -113,13 +113,15 @@ async function sendBirthday(data) {
   const log = await readLog();
 
   // Elak menghantar dua kali pada hari Malaysia yang sama.
+  /*
   if (log[key] && log[key].status === "sent") {
     return {
       status: "duplicate_skipped",
       message: "Ucapan untuk staf ini sudah diproses hari ini."
     };
   }
-
+*/
+  
   const caption =
     "🎉 SELAMAT HARI LAHIR! 🎉\n\n" +
     "Tarikh: " + tarikh + "\n\n" +
