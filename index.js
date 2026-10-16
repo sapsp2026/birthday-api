@@ -125,11 +125,11 @@ async function sendBirthday(data) {
   const caption =
     "🎉 SELAMAT HARI LAHIR! 🎉\n\n" +
     "Tarikh: " + tarikh + "\n\n" +
-    "Warga SAPSP mengucapkan Selamat Hari Lahir kepada " +
+    "Dekan dan Seluruh Warga SAPSP mengucapkan Selamat Hari Lahir kepada " +
     nama + "!\n\n" +
     "Semoga dikurniakan kesihatan yang baik, " +
     "kebahagiaan dan rezeki yang berkat.\n\n" +
-    "Ikhlas daripada warga SAPSP.";
+    "Ikhlas daripada Dekan dan Seluruh Warga SAPSP.";
 
   log[key] = {
     nama,
