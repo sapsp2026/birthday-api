@@ -9,20 +9,25 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 
+// ========================================
+// KONFIGURASI
+// ========================================
+
 const PORT = Number(process.env.PORT || 3000);
 const API_SECRET = process.env.BIRTHDAY_API_SECRET || "";
 const GROUP_JID = process.env.WHATSAPP_GROUP_JID || "";
 const PHONE_NUMBER = String(
   process.env.WHATSAPP_PHONE_NUMBER || ""
 ).replace(/\D/g, "");
+
 const AUTH_DIR = process.env.AUTH_DIR || "auth_info_baileys";
 const LOG_FILE = "birthday-log.json";
 
 let sock = null;
 let isConnected = false;
-let connectionPromise = null;
-let reconnectTimer = null;
 let stopping = false;
+let reconnectTimer = null;
+let connectionPromise = null;
 
 const pending = [];
 const queuedIds = new Set();
@@ -30,11 +35,16 @@ let processingQueue = false;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// ========================================
+// UTILITI
+// ========================================
+
 function jsonResponse(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store"
   });
+
   res.end(JSON.stringify(data));
 }
 
@@ -57,10 +67,10 @@ function todayMalaysia() {
     day: "2-digit"
   }).formatToParts(new Date());
 
-  const part = type =>
+  const get = type =>
     parts.find(p => p.type === type)?.value || "";
 
-  return `${part("year")}-${part("month")}-${part("day")}`;
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
 function birthdayKey(nama, tarikh) {
@@ -89,7 +99,40 @@ async function writeLog(log) {
   );
 }
 
-// Hantar poster sahaja, tanpa kapsyen.
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let size = 0;
+    const maxSize = 1024 * 1024;
+
+    req.on("data", chunk => {
+      size += chunk.length;
+
+      if (size > maxSize) {
+        reject(new Error("Permintaan melebihi had 1 MB."));
+        req.destroy();
+        return;
+      }
+
+      body += chunk;
+    });
+
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Format JSON tidak sah."));
+      }
+    });
+
+    req.on("error", reject);
+  });
+}
+
+// ========================================
+// PENGHANTARAN POSTER HARI LAHIR
+// ========================================
+
 async function sendBirthday(data) {
   if (!sock || !isConnected) {
     throw new Error("WhatsApp belum bersambung.");
@@ -97,7 +140,8 @@ async function sendBirthday(data) {
 
   if (!GROUP_JID.endsWith("@g.us")) {
     throw new Error(
-      "WHATSAPP_GROUP_JID belum ditetapkan dengan ID kumpulan yang betul."
+      "WHATSAPP_GROUP_JID tidak sah. " +
+      "Gunakan ID kumpulan yang berakhir dengan @g.us."
     );
   }
 
@@ -105,22 +149,18 @@ async function sendBirthday(data) {
   const tarikh = normalizeDate(data.tarikh);
   const poster = String(data.poster || "").trim();
 
-  if (!nama || !tarikh) {
-    throw new Error("Nama atau tarikh lahir tiada.");
-  }
-
-  if (!poster) {
-    throw new Error("URL poster tidak tersedia.");
+  if (!nama || !tarikh || !poster) {
+    throw new Error("Medan nama, tarikh dan poster diperlukan.");
   }
 
   const key = birthdayKey(nama, tarikh);
   const log = await readLog();
 
+  // Elakkan menghantar poster yang sama berulang kali hari ini.
   if (log[key]?.status === "sent") {
-    return {
-      status: "duplicate_skipped",
-      message: "Poster untuk staf ini sudah dihantar hari ini."
-    };
+    console.log("Penghantaran pendua diabaikan:", nama);
+
+    return { status: "duplicate_skipped" };
   }
 
   log[key] = {
@@ -133,6 +173,7 @@ async function sendBirthday(data) {
   await writeLog(log);
 
   try {
+    // POSTER SAHAJA, TANPA KAPSYEN
     const result = await sock.sendMessage(GROUP_JID, {
       image: { url: poster }
     });
@@ -149,7 +190,7 @@ async function sendBirthday(data) {
 
     await writeLog(latestLog);
 
-    console.log("Poster dihantar:", nama);
+    console.log("Poster berjaya dihantar:", nama);
 
     return {
       status: "sent",
@@ -171,19 +212,25 @@ async function sendBirthday(data) {
   }
 }
 
+// ========================================
+// BARISAN PENGHANTARAN
+// ========================================
+
 async function processQueue() {
   if (processingQueue) return;
+
   processingQueue = true;
 
   try {
     while (pending.length > 0) {
       const item = pending.shift();
-      queuedIds.delete(item.id);
 
       try {
         item.resolve(await sendBirthday(item.data));
       } catch (error) {
         item.reject(error);
+      } finally {
+        queuedIds.delete(item.id);
       }
 
       await delay(1500);
@@ -204,40 +251,13 @@ function enqueueBirthday(data) {
 
   return new Promise((resolve, reject) => {
     pending.push({ id, data, resolve, reject });
-    processQueue();
+    void processQueue();
   });
 }
 
-
-function readRequestBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = "";
-    let size = 0;
-    const maxSize = 1024 * 1024;
-
-    req.on("data", chunk => {
-      size += chunk.length;
-
-      if (size > maxSize) {
-        reject(new Error("Permintaan terlalu besar."));
-        req.destroy();
-        return;
-      }
-
-      body += chunk;
-    });
-
-    req.on("end", () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new Error("Format JSON tidak sah."));
-      }
-    });
-
-    req.on("error", reject);
-  });
-}
+// ========================================
+// API HTTP
+// ========================================
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(
@@ -245,7 +265,7 @@ const server = http.createServer(async (req, res) => {
     `http://${req.headers.host || "localhost"}`
   );
 
-  // Semak status API dan sambungan WhatsApp.
+  // Status API
   if (req.method === "GET" && url.pathname === "/health") {
     return jsonResponse(res, 200, {
       status: "ok",
@@ -253,7 +273,7 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Senarai kumpulan yang boleh dilihat oleh akaun WhatsApp bot.
+  // Senarai kumpulan WhatsApp
   if (req.method === "GET" && url.pathname === "/groups") {
     if (!isConnected || !sock) {
       return jsonResponse(res, 503, {
@@ -265,14 +285,12 @@ const server = http.createServer(async (req, res) => {
     try {
       const groups = await sock.groupFetchAllParticipating();
 
-      const result = Object.values(groups).map(group => ({
-        id: group.id,
-        name: group.subject
-      }));
-
       return jsonResponse(res, 200, {
         status: "ok",
-        groups: result
+        groups: Object.values(groups).map(group => ({
+          id: group.id,
+          name: group.subject
+        }))
       });
     } catch (error) {
       return jsonResponse(res, 500, {
@@ -282,7 +300,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Endpoint untuk menerima permintaan poster hari lahir.
+  // Endpoint Birthday
   if (req.method === "POST" && url.pathname === "/birthday") {
     if (!API_SECRET) {
       return jsonResponse(res, 500, {
@@ -295,7 +313,8 @@ const server = http.createServer(async (req, res) => {
 
     if (
       typeof suppliedKey !== "string" ||
-      suppliedKey.length !== API_SECRET.length ||
+      Buffer.byteLength(suppliedKey) !==
+        Buffer.byteLength(API_SECRET) ||
       !crypto.timingSafeEqual(
         Buffer.from(suppliedKey),
         Buffer.from(API_SECRET)
@@ -327,10 +346,9 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const result = await enqueueBirthday(data);
-
       return jsonResponse(res, 200, result);
     } catch (error) {
-      console.error("Gagal menghantar poster:", error.message);
+      console.error("Penghantaran gagal:", error.message);
 
       return jsonResponse(res, 500, {
         status: "error",
@@ -349,9 +367,12 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`Birthday API berjalan pada port ${PORT}`);
 });
 
+// ========================================
+// SAMBUNGAN WHATSAPP BAILEYS
+// ========================================
 
 async function startBot() {
-  if (stopping || connectionPromise) return connectionPromise;
+  if (stopping || connectionPromise) return;
 
   connectionPromise = (async () => {
     try {
@@ -367,10 +388,46 @@ async function startBot() {
         syncFullHistory: false
       });
 
+      let pairingRequested = false;
+
       sock.ev.on("creds.update", saveCreds);
 
       sock.ev.on("connection.update", async update => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        // Minta pairing code hanya sekali bagi socket ini.
+        if (
+          !state.creds.registered &&
+          PHONE_NUMBER &&
+          !pairingRequested &&
+          (connection === "connecting" || Boolean(qr))
+        ) {
+          pairingRequested = true;
+
+          try {
+            // Beri masa untuk sambungan WebSocket dimulakan.
+            await delay(1500);
+
+            if (!state.creds.registered && !stopping) {
+              const code = await sock.requestPairingCode(
+                PHONE_NUMBER
+              );
+
+              console.log("================================");
+              console.log("WHATSAPP PAIRING CODE:", code);
+              console.log(
+                "WhatsApp > Peranti dipautkan > " +
+                "Pautkan peranti > Pautkan dengan nombor telefon"
+              );
+              console.log("================================");
+            }
+          } catch (error) {
+            console.error(
+              "Gagal mendapatkan pairing code:",
+              error.message
+            );
+          }
+        }
 
         if (connection === "connecting") {
           console.log("Sedang menyambung ke WhatsApp...");
@@ -379,11 +436,6 @@ async function startBot() {
         if (connection === "open") {
           isConnected = true;
           console.log("WhatsApp berjaya disambungkan.");
-
-          if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-          }
         }
 
         if (connection === "close") {
@@ -392,16 +444,16 @@ async function startBot() {
           const statusCode =
             lastDisconnect?.error?.output?.statusCode;
 
-          console.log(
+          console.error(
             "Sambungan WhatsApp ditutup. Kod:",
             statusCode
           );
 
           if (statusCode === DisconnectReason.loggedOut) {
             console.error(
-              "Sesi WhatsApp telah log keluar. " +
-              "Pair semula akaun WhatsApp sebelum cuba lagi."
+              "Sesi telah log keluar. Pair semula diperlukan."
             );
+            connectionPromise = null;
             return;
           }
 
@@ -409,57 +461,30 @@ async function startBot() {
             reconnectTimer = setTimeout(() => {
               reconnectTimer = null;
               connectionPromise = null;
-              startBot();
+              void startBot();
             }, 5000);
           }
         }
       });
-
-      // Pairing code hanya diperlukan jika belum ada sesi.
-      if (!state.creds.registered && PHONE_NUMBER) {
-        await delay(3000);
-
-        try {
-          const code = await sock.requestPairingCode(
-            PHONE_NUMBER
-          );
-
-          console.log("----------------------------------");
-          console.log("WHATSAPP PAIRING CODE:", code);
-          console.log(
-            "WhatsApp > Peranti dipautkan > " +
-            "Pautkan peranti > Pautkan dengan nombor telefon"
-          );
-          console.log("----------------------------------");
-        } catch (error) {
-          console.error(
-            "Gagal mendapatkan pairing code:",
-            error.message
-          );
-          console.error(
-            "Semak nombor telefon, status sambungan dan log Render."
-          );
-        }
-      }
     } catch (error) {
-      console.error(
-        "Ralat memulakan WhatsApp:",
-        error.message
-      );
-
+      console.error("Ralat memulakan Baileys:", error.message);
       connectionPromise = null;
 
       if (!stopping && !reconnectTimer) {
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
-          startBot();
+          void startBot();
         }, 10000);
       }
     }
   })();
 
-  return connectionPromise;
+  await connectionPromise;
 }
+
+// ========================================
+// PENUTUPAN SERVIS
+// ========================================
 
 async function shutdown() {
   if (stopping) return;
@@ -473,9 +498,7 @@ async function shutdown() {
   }
 
   try {
-    if (sock) {
-      sock.end(undefined);
-    }
+    if (sock) sock.end(undefined);
   } catch (error) {
     console.error("Ralat menutup WhatsApp:", error.message);
   }
@@ -488,7 +511,7 @@ async function shutdown() {
   setTimeout(() => process.exit(0), 5000).unref();
 }
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGINT", () => void shutdown());
 
-startBot();
+void startBot();
