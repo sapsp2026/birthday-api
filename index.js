@@ -1,3 +1,4 @@
+
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason
@@ -10,34 +11,34 @@ import crypto from "node:crypto";
 
 const PORT = Number(process.env.PORT || 3000);
 const API_SECRET = process.env.BIRTHDAY_API_SECRET || "";
-
-// Gantikan dengan ID kumpulan WhatsApp SAPSP sebenar.
 const GROUP_JID = process.env.WHATSAPP_GROUP_JID || "";
-
-const AUTH_DIR = "auth_info_baileys";
+const PHONE_NUMBER = String(
+  process.env.WHATSAPP_PHONE_NUMBER || ""
+).replace(/\D/g, "");
+const AUTH_DIR = process.env.AUTH_DIR || "auth_info_baileys";
 const LOG_FILE = "birthday-log.json";
 
 let sock = null;
 let isConnected = false;
 let connectionPromise = null;
+let reconnectTimer = null;
+let stopping = false;
 
 const pending = [];
 const queuedIds = new Set();
 let processingQueue = false;
 
-// --------------------------------------------------
-// UTILITI
-// --------------------------------------------------
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function jsonResponse(res, status, data) {
   res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8"
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store"
   });
   res.end(JSON.stringify(data));
 }
 
 function normalizeDate(value) {
-  // Terima YYYY-MM-DD atau teks tarikh daripada AppSheet.
   const s = String(value || "").trim();
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
@@ -49,24 +50,26 @@ function normalizeDate(value) {
 }
 
 function todayMalaysia() {
-  return new Intl.DateTimeFormat("en-CA", {
+  const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Kuala_Lumpur",
     year: "numeric",
     month: "2-digit",
     day: "2-digit"
-  }).format(new Date());
+  }).formatToParts(new Date());
+
+  const part = type =>
+    parts.find(p => p.type === type)?.value || "";
+
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 function birthdayKey(nama, tarikh) {
-  const input = [
-    String(nama).trim().toLowerCase(),
-    normalizeDate(tarikh),
-    todayMalaysia()
-  ].join("|");
-
-  return crypto
-    .createHash("sha256")
-    .update(input)
+  return crypto.createHash("sha256")
+    .update([
+      String(nama || "").trim().toLowerCase(),
+      normalizeDate(tarikh),
+      todayMalaysia()
+    ].join("|"))
     .digest("hex");
 }
 
@@ -86,10 +89,7 @@ async function writeLog(log) {
   );
 }
 
-// --------------------------------------------------
-// HANTAR UCAPAN DAN POSTER
-// --------------------------------------------------
-
+// Hantar poster sahaja, tanpa kapsyen.
 async function sendBirthday(data) {
   if (!sock || !isConnected) {
     throw new Error("WhatsApp belum bersambung.");
@@ -109,28 +109,19 @@ async function sendBirthday(data) {
     throw new Error("Nama atau tarikh lahir tiada.");
   }
 
+  if (!poster) {
+    throw new Error("URL poster tidak tersedia.");
+  }
+
   const key = birthdayKey(nama, tarikh);
   const log = await readLog();
 
-  // Elak menghantar dua kali pada hari Malaysia yang sama.
-  /*
-  if (log[key] && log[key].status === "sent") {
+  if (log[key]?.status === "sent") {
     return {
       status: "duplicate_skipped",
-      message: "Ucapan untuk staf ini sudah diproses hari ini."
+      message: "Poster untuk staf ini sudah dihantar hari ini."
     };
   }
-*/
-  
-/*
-  const caption =
-    "🎉 SELAMAT HARI LAHIR! 🎉\n\n" +
-    "Tarikh: " + tarikh + "\n\n" +
-    "Dekan dan Seluruh Warga SAPSP mengucapkan Selamat Hari Lahir kepada " +
-    nama + "!\n\n" +
-    "Semoga dikurniakan kesihatan yang baik, " +
-    "kebahagiaan dan rezeki yang berkat.\n\n" +
-    "Ikhlas daripada Dekan dan Seluruh Warga SAPSP.";
 
   log[key] = {
     nama,
@@ -138,76 +129,16 @@ async function sendBirthday(data) {
     status: "pending",
     createdAt: new Date().toISOString()
   };
+
   await writeLog(log);
 
   try {
-    let result;
-
-    if (poster) {
-      result = await sock.sendMessage(GROUP_JID, {
-        image: { url: poster },
-        caption
-      });
-    } else {
-      result = await sock.sendMessage(GROUP_JID, {
-        text: caption
-      });
-    }
-
-    const latestLog = await readLog();
-    latestLog[key] = {
-      nama,
-      tarikh,
-      status: "sent",
-      messageId: result?.key?.id || "",
-      createdAt: new Date().toISOString()
-    };
-    await writeLog(latestLog);
-
-    console.log("Mesej diproses:", nama, result?.key?.id);
-
-    return {
-      status: "sent",
-      messageId: result?.key?.id || ""
-    };
-
-  } catch (error) {
-    const latestLog = await readLog();
-    latestLog[key] = {
-      nama,
-      tarikh,
-      status: "failed",
-      error: error.message,
-      createdAt: new Date().toISOString()
-    };
-    await writeLog(latestLog);
-
-    throw error;
-  }
-}
-
-*/
-
-    log[key] = {
-    nama,
-    tarikh,
-    status: "pending",
-    createdAt: new Date().toISOString()
-  };
-  await writeLog(log);
-
-  try {
-    let result;
-
-    if (!poster) {
-      throw new Error("URL poster tidak tersedia.");
-    }
-
-    result = await sock.sendMessage(GROUP_JID, {
+    const result = await sock.sendMessage(GROUP_JID, {
       image: { url: poster }
     });
 
     const latestLog = await readLog();
+
     latestLog[key] = {
       nama,
       tarikh,
@@ -215,17 +146,18 @@ async function sendBirthday(data) {
       messageId: result?.key?.id || "",
       createdAt: new Date().toISOString()
     };
+
     await writeLog(latestLog);
 
-    console.log("Poster dihantar:", nama, result?.key?.id);
+    console.log("Poster dihantar:", nama);
 
     return {
       status: "sent",
       messageId: result?.key?.id || ""
     };
-
   } catch (error) {
     const latestLog = await readLog();
+
     latestLog[key] = {
       nama,
       tarikh,
@@ -233,15 +165,11 @@ async function sendBirthday(data) {
       error: error.message,
       createdAt: new Date().toISOString()
     };
-    await writeLog(latestLog);
 
+    await writeLog(latestLog);
     throw error;
   }
 }
-
-// --------------------------------------------------
-// BARISAN PERMINTAAN
-// --------------------------------------------------
 
 async function processQueue() {
   if (processingQueue) return;
@@ -253,13 +181,12 @@ async function processQueue() {
       queuedIds.delete(item.id);
 
       try {
-        const result = await sendBirthday(item.data);
-        item.resolve(result);
+        item.resolve(await sendBirthday(item.data));
       } catch (error) {
         item.reject(error);
       }
 
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await delay(1500);
     }
   } finally {
     processingQueue = false;
@@ -270,9 +197,7 @@ function enqueueBirthday(data) {
   const id = birthdayKey(data.nama, data.tarikh);
 
   if (queuedIds.has(id)) {
-    return Promise.resolve({
-      status: "already_queued"
-    });
+    return Promise.resolve({ status: "already_queued" });
   }
 
   queuedIds.add(id);
@@ -283,22 +208,57 @@ function enqueueBirthday(data) {
   });
 }
 
-// --------------------------------------------------
-// HTTP API UNTUK APPSHEET
-// --------------------------------------------------
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let size = 0;
+    const maxSize = 1024 * 1024;
+
+    req.on("data", chunk => {
+      size += chunk.length;
+
+      if (size > maxSize) {
+        reject(new Error("Permintaan terlalu besar."));
+        req.destroy();
+        return;
+      }
+
+      body += chunk;
+    });
+
+    req.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Format JSON tidak sah."));
+      }
+    });
+
+    req.on("error", reject);
+  });
+}
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
+  const url = new URL(
+    req.url || "/",
+    `http://${req.headers.host || "localhost"}`
+  );
+
+  // Semak status API dan sambungan WhatsApp.
+  if (req.method === "GET" && url.pathname === "/health") {
     return jsonResponse(res, 200, {
       status: "ok",
       whatsappConnected: isConnected
     });
   }
 
-  if (req.method === "GET" && req.url === "/groups") {
-    if (!sock || !isConnected) {
+  // Senarai kumpulan yang boleh dilihat oleh akaun WhatsApp bot.
+  if (req.method === "GET" && url.pathname === "/groups") {
+    if (!isConnected || !sock) {
       return jsonResponse(res, 503, {
-        error: "WhatsApp belum bersambung."
+        status: "error",
+        message: "WhatsApp belum bersambung."
       });
     }
 
@@ -306,254 +266,229 @@ const server = http.createServer(async (req, res) => {
       const groups = await sock.groupFetchAllParticipating();
 
       const result = Object.values(groups).map(group => ({
-        name: group.subject,
-        id: group.id
+        id: group.id,
+        name: group.subject
       }));
 
-      return jsonResponse(res, 200, result);
+      return jsonResponse(res, 200, {
+        status: "ok",
+        groups: result
+      });
     } catch (error) {
       return jsonResponse(res, 500, {
-        error: error.message
+        status: "error",
+        message: error.message
       });
     }
   }
 
-  if (req.method !== "POST" || req.url !== "/birthday") {
-    return jsonResponse(res, 404, {
-      error: "Endpoint tidak ditemui."
-    });
-  }
-
-  if (!API_SECRET) {
-    return jsonResponse(res, 500, {
-      error: "BIRTHDAY_API_SECRET belum ditetapkan."
-    });
-  }
-
-  if (req.headers["x-api-key"] !== API_SECRET) {
-    return jsonResponse(res, 401, {
-      error: "Kunci API tidak sah."
-    });
-  }
-
-  let body = "";
-
-  req.on("data", chunk => {
-    body += chunk;
-
-    if (body.length > 1_000_000) {
-      req.destroy();
+  // Endpoint untuk menerima permintaan poster hari lahir.
+  if (req.method === "POST" && url.pathname === "/birthday") {
+    if (!API_SECRET) {
+      return jsonResponse(res, 500, {
+        status: "error",
+        message: "BIRTHDAY_API_SECRET belum ditetapkan."
+      });
     }
-  });
 
-  req.on("end", async () => {
+    const suppliedKey = req.headers["x-api-key"];
+
+    if (
+      typeof suppliedKey !== "string" ||
+      suppliedKey.length !== API_SECRET.length ||
+      !crypto.timingSafeEqual(
+        Buffer.from(suppliedKey),
+        Buffer.from(API_SECRET)
+      )
+    ) {
+      return jsonResponse(res, 401, {
+        status: "error",
+        message: "API key tidak sah."
+      });
+    }
+
+    let data;
+
     try {
-      const data = JSON.parse(body);
+      data = await readRequestBody(req);
+    } catch (error) {
+      return jsonResponse(res, 400, {
+        status: "error",
+        message: error.message
+      });
+    }
 
-      if (!isConnected) {
-        return jsonResponse(res, 503, {
-          error: "WhatsApp belum bersambung. Cuba semula kemudian."
-        });
-      }
+    if (!data.nama || !data.tarikh || !data.poster) {
+      return jsonResponse(res, 400, {
+        status: "error",
+        message: "Medan nama, tarikh dan poster diperlukan."
+      });
+    }
 
+    try {
       const result = await enqueueBirthday(data);
 
       return jsonResponse(res, 200, result);
-
     } catch (error) {
-      console.error("Ralat endpoint:", error.message);
+      console.error("Gagal menghantar poster:", error.message);
 
       return jsonResponse(res, 500, {
         status: "error",
-        error: error.message
+        message: error.message
       });
     }
+  }
+
+  return jsonResponse(res, 404, {
+    status: "error",
+    message: "Endpoint tidak ditemui."
   });
 });
 
-// --------------------------------------------------
-// SAMBUNGAN WHATSAPP (PAIRING CODE)
-// --------------------------------------------------
-
-
- // --------------------------------------------------
- // SAMBUNGAN WHATSAPP (PAIRING CODE)
- // --------------------------------------------------
-
-let pairingRequested = false;
-let resettingAuth = false;
-
-const delay = ms =>
-  new Promise(resolve => setTimeout(resolve, ms));
-
-async function startBot() {
-  if (connectionPromise) return connectionPromise;
-
-  connectionPromise = (async () => {
-    const { state, saveCreds } =
-      await useMultiFileAuthState(AUTH_DIR);
-
-    const socket = makeWASocket({
-      auth: state,
-      logger: pino({ level: "silent" }),
-      markOnlineOnConnect: false,
-      printQRInTerminal: false
-    });
-
-    sock = socket;
-    pairingRequested = false;
-
-    socket.ev.on("creds.update", saveCreds);
-
-    const phoneNumber = String(
-      process.env.WHATSAPP_PHONE_NUMBER || ""
-    ).replace(/\D/g, "");
-
-    async function requestPairing() {
-      if (
-        pairingRequested ||
-        socket !== sock ||
-        socket.authState.creds.registered
-      ) return;
-
-      if (!phoneNumber) {
-        console.error(
-          "Tetapkan WHATSAPP_PHONE_NUMBER dalam Render."
-        );
-        return;
-      }
-
-      pairingRequested = true;
-
-      try {
-        // Beri masa untuk sambungan WebSocket bersedia.
-        await delay(3000);
-
-        if (
-          socket !== sock ||
-          socket.ws?.readyState !== 1 ||
-          socket.authState.creds.registered
-        ) {
-          pairingRequested = false;
-          console.log(
-            "Socket belum bersedia. Pairing ditangguhkan."
-          );
-          return;
-        }
-
-        console.log("Meminta Pairing Code WhatsApp...");
-
-        const code =
-          await socket.requestPairingCode(phoneNumber);
-
-        console.log("PAIRING CODE:", code);
-        console.log(
-          "Masukkan kod melalui WhatsApp > Linked devices."
-        );
-      } catch (error) {
-        pairingRequested = false;
-        console.error(
-          "Gagal mendapatkan Pairing Code:",
-          error.message
-        );
-      }
-    }
-
-    socket.ev.on("connection.update", async update => {
-      const { connection, lastDisconnect } = update;
-
-      if (connection === "connecting") {
-        console.log("Menyambung ke WhatsApp...");
-
-        if (!socket.authState.creds.registered) {
-          requestPairing().catch(console.error);
-        }
-      }
-
-      if (connection === "open") {
-        isConnected = true;
-        console.log("WhatsApp berjaya disambungkan.");
-      }
-
-      if (connection === "close") {
-        isConnected = false;
-
-        if (sock === socket) {
-          sock = null;
-        }
-
-        const statusCode =
-          lastDisconnect?.error?.output?.statusCode;
-
-        const shouldReconnect =
-          statusCode !== DisconnectReason.loggedOut;
-
-        console.log(
-          "Sambungan ditutup. Kod:",
-          statusCode,
-          "Sambung semula:",
-          shouldReconnect
-        );
-
-        if (connectionPromise) {
-          connectionPromise = null;
-        }
-
-        if (resettingAuth) return;
-
-        if (!shouldReconnect) {
-          resettingAuth = true;
-
-          try {
-            console.error(
-              "Sesi log keluar. Reset sesi lama..."
-            );
-
-            await fs.rm(AUTH_DIR, {
-              recursive: true,
-              force: true
-            });
-
-            console.log(
-              "Sesi lama dipadam. Memulakan pairing baharu..."
-            );
-          } catch (error) {
-            console.error(
-              "Gagal reset sesi:",
-              error.message
-            );
-          } finally {
-            resettingAuth = false;
-          }
-
-          setTimeout(() => {
-            startBot().catch(console.error);
-          }, 2000);
-
-        } else {
-          setTimeout(() => {
-            startBot().catch(console.error);
-          }, 3000);
-        }
-      }
-    });
-  })();
-
-  try {
-    await connectionPromise;
-  } catch (error) {
-    connectionPromise = null;
-    throw error;
-  }
-}
-
-
-// --------------------------------------------------
-// MULAKAN SERVER DAN BOT
-// --------------------------------------------------
-
 server.listen(PORT, "0.0.0.0", () => {
-  console.log("Birthday API berjalan pada port", PORT);
+  console.log(`Birthday API berjalan pada port ${PORT}`);
 });
 
-startBot().catch(console.error);
+
+async function startBot() {
+  if (stopping || connectionPromise) return connectionPromise;
+
+  connectionPromise = (async () => {
+    try {
+      const { state, saveCreds } =
+        await useMultiFileAuthState(AUTH_DIR);
+
+      sock = makeWASocket({
+        auth: state,
+        logger: pino({ level: "silent" }),
+        printQRInTerminal: false,
+        browser: ["SAPSP Birthday Bot", "Chrome", "1.0.0"],
+        markOnlineOnConnect: false,
+        syncFullHistory: false
+      });
+
+      sock.ev.on("creds.update", saveCreds);
+
+      sock.ev.on("connection.update", async update => {
+        const { connection, lastDisconnect } = update;
+
+        if (connection === "connecting") {
+          console.log("Sedang menyambung ke WhatsApp...");
+        }
+
+        if (connection === "open") {
+          isConnected = true;
+          console.log("WhatsApp berjaya disambungkan.");
+
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+        }
+
+        if (connection === "close") {
+          isConnected = false;
+
+          const statusCode =
+            lastDisconnect?.error?.output?.statusCode;
+
+          console.log(
+            "Sambungan WhatsApp ditutup. Kod:",
+            statusCode
+          );
+
+          if (statusCode === DisconnectReason.loggedOut) {
+            console.error(
+              "Sesi WhatsApp telah log keluar. " +
+              "Pair semula akaun WhatsApp sebelum cuba lagi."
+            );
+            return;
+          }
+
+          if (!stopping && !reconnectTimer) {
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null;
+              connectionPromise = null;
+              startBot();
+            }, 5000);
+          }
+        }
+      });
+
+      // Pairing code hanya diperlukan jika belum ada sesi.
+      if (!state.creds.registered && PHONE_NUMBER) {
+        await delay(3000);
+
+        try {
+          const code = await sock.requestPairingCode(
+            PHONE_NUMBER
+          );
+
+          console.log("----------------------------------");
+          console.log("WHATSAPP PAIRING CODE:", code);
+          console.log(
+            "WhatsApp > Peranti dipautkan > " +
+            "Pautkan peranti > Pautkan dengan nombor telefon"
+          );
+          console.log("----------------------------------");
+        } catch (error) {
+          console.error(
+            "Gagal mendapatkan pairing code:",
+            error.message
+          );
+          console.error(
+            "Semak nombor telefon, status sambungan dan log Render."
+          );
+        }
+      }
+    } catch (error) {
+      console.error(
+        "Ralat memulakan WhatsApp:",
+        error.message
+      );
+
+      connectionPromise = null;
+
+      if (!stopping && !reconnectTimer) {
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          startBot();
+        }, 10000);
+      }
+    }
+  })();
+
+  return connectionPromise;
+}
+
+async function shutdown() {
+  if (stopping) return;
+
+  stopping = true;
+  isConnected = false;
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  try {
+    if (sock) {
+      sock.end(undefined);
+    }
+  } catch (error) {
+    console.error("Ralat menutup WhatsApp:", error.message);
+  }
+
+  server.close(() => {
+    console.log("Birthday API ditutup.");
+    process.exit(0);
+  });
+
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+startBot();
