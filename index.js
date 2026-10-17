@@ -375,6 +375,17 @@ const server = http.createServer(async (req, res) => {
 // SAMBUNGAN WHATSAPP (PAIRING CODE)
 // --------------------------------------------------
 
+
+ // --------------------------------------------------
+ // SAMBUNGAN WHATSAPP (PAIRING CODE)
+ // --------------------------------------------------
+
+let pairingRequested = false;
+let resettingAuth = false;
+
+const delay = ms =>
+  new Promise(resolve => setTimeout(resolve, ms));
+
 async function startBot() {
   if (connectionPromise) return connectionPromise;
 
@@ -386,31 +397,78 @@ async function startBot() {
       auth: state,
       logger: pino({ level: "silent" }),
       markOnlineOnConnect: false,
-      printQRInTerminal: false // Tutup kod QR terminal
+      printQRInTerminal: false
     });
 
     sock = socket;
+    pairingRequested = false;
+
     socket.ev.on("creds.update", saveCreds);
 
-    // Permintaan Pairing Code jika belum berdaftar/berpasangan
-    if (!socket.authState.creds.registered) {
-      const phoneNumber = "60125729489"; // Nombor telefon anda
-      
-      setTimeout(async () => {
-        try {
-          console.log("Sedang menjana Pairing Code untuk nombor:", phoneNumber);
-          let code = await socket.requestPairingCode(phoneNumber);
-          console.log(`\n\n========================================`);
-          console.log(` KOD PAIRING WHATSAPP ANDA: ${code}`);
-          console.log(`========================================\n\n`);
-        } catch (err) {
-          console.error("Gagal mendapatkan Pairing Code:", err);
+    const phoneNumber = String(
+      process.env.WHATSAPP_PHONE_NUMBER || ""
+    ).replace(/\D/g, "");
+
+    async function requestPairing() {
+      if (
+        pairingRequested ||
+        socket !== sock ||
+        socket.authState.creds.registered
+      ) return;
+
+      if (!phoneNumber) {
+        console.error(
+          "Tetapkan WHATSAPP_PHONE_NUMBER dalam Render."
+        );
+        return;
+      }
+
+      pairingRequested = true;
+
+      try {
+        // Beri masa untuk sambungan WebSocket bersedia.
+        await delay(3000);
+
+        if (
+          socket !== sock ||
+          socket.ws?.readyState !== 1 ||
+          socket.authState.creds.registered
+        ) {
+          pairingRequested = false;
+          console.log(
+            "Socket belum bersedia. Pairing ditangguhkan."
+          );
+          return;
         }
-      }, 4000);
+
+        console.log("Meminta Pairing Code WhatsApp...");
+
+        const code =
+          await socket.requestPairingCode(phoneNumber);
+
+        console.log("PAIRING CODE:", code);
+        console.log(
+          "Masukkan kod melalui WhatsApp > Linked devices."
+        );
+      } catch (error) {
+        pairingRequested = false;
+        console.error(
+          "Gagal mendapatkan Pairing Code:",
+          error.message
+        );
+      }
     }
 
     socket.ev.on("connection.update", async update => {
       const { connection, lastDisconnect } = update;
+
+      if (connection === "connecting") {
+        console.log("Menyambung ke WhatsApp...");
+
+        if (!socket.authState.creds.registered) {
+          requestPairing().catch(console.error);
+        }
+      }
 
       if (connection === "open") {
         isConnected = true;
@@ -419,7 +477,10 @@ async function startBot() {
 
       if (connection === "close") {
         isConnected = false;
-        sock = null;
+
+        if (sock === socket) {
+          sock = null;
+        }
 
         const statusCode =
           lastDisconnect?.error?.output?.statusCode;
@@ -434,16 +495,45 @@ async function startBot() {
           shouldReconnect
         );
 
-        connectionPromise = null;
+        if (connectionPromise) {
+          connectionPromise = null;
+        }
 
-        if (shouldReconnect) {
+        if (resettingAuth) return;
+
+        if (!shouldReconnect) {
+          resettingAuth = true;
+
+          try {
+            console.error(
+              "Sesi log keluar. Reset sesi lama..."
+            );
+
+            await fs.rm(AUTH_DIR, {
+              recursive: true,
+              force: true
+            });
+
+            console.log(
+              "Sesi lama dipadam. Memulakan pairing baharu..."
+            );
+          } catch (error) {
+            console.error(
+              "Gagal reset sesi:",
+              error.message
+            );
+          } finally {
+            resettingAuth = false;
+          }
+
+          setTimeout(() => {
+            startBot().catch(console.error);
+          }, 2000);
+
+        } else {
           setTimeout(() => {
             startBot().catch(console.error);
           }, 3000);
-        } else {
-          console.error(
-            "Sesi log keluar. Sila padam folder auth_info_baileys atau set semula untuk pairing baru."
-          );
         }
       }
     });
@@ -456,6 +546,7 @@ async function startBot() {
     throw error;
   }
 }
+
 
 // --------------------------------------------------
 // MULAKAN SERVER DAN BOT
