@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT || 3000);
 const API_SECRET = process.env.BIRTHDAY_API_SECRET || "";
 const GROUP_JID = process.env.WHATSAPP_GROUP_JID || "";
 const PHONE_NUMBER = String(
-  process.env.WHATSAPP_PHONE_NUMBER || ""
+  process.env.WHATSAPP_PHONE_NUMBER || "60123456789"
 ).replace(/\D/g, "");
 
 const AUTH_DIR = process.env.AUTH_DIR || "auth_info_baileys";
