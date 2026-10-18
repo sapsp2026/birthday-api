@@ -35,10 +35,26 @@ const delay = ms =>
   new Promise(resolve => setTimeout(resolve, ms));
 
 function isAuthorized(req) {
+  if (!API_SECRET) {
+    console.error(
+      "BIRTHDAY_API_SECRET belum ditetapkan dalam Render."
+    );
+    return false;
+  }
+
+  const headerSecret = req.get("x-api-secret");
+  const bodySecret = req.body?.secret;
+
   const supplied =
-    req.headers["x-api-secret"] ||
-    req.body?.secret ||
-    "";
+    typeof headerSecret === "string"
+      ? headerSecret
+      : typeof bodySecret === "string"
+        ? bodySecret
+        : "";
+
+  return supplied.length > 0 && supplied === API_SECRET;
+}
+
 
   return Boolean(API_SECRET) && supplied === API_SECRET;
 }
