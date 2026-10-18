@@ -55,10 +55,6 @@ function isAuthorized(req) {
   return supplied.length > 0 && supplied === API_SECRET;
 }
 
-
-  return Boolean(API_SECRET) && supplied === API_SECRET;
-}
-
 function requireSecret(req, res, next) {
   if (!isAuthorized(req)) {
     return res.status(401).json({
@@ -69,6 +65,7 @@ function requireSecret(req, res, next) {
 
   next();
 }
+
 
 function getFileExtension(contentType = "") {
   if (contentType.includes("png")) return ".png";
