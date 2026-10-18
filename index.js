@@ -203,6 +203,48 @@ app.get("/health", (req, res) => {
   });
 });
 
+
+ // --------------------------------------------------
+ // SENARAI GROUP WHATSAPP
+ // --------------------------------------------------
+
+app.get("/groups", requireSecret, async (req, res) => {
+  try {
+    if (!isConnected || !sock) {
+      return res.status(503).json({
+        success: false,
+        whatsappConnected: false,
+        message: "WhatsApp belum bersambung."
+      });
+    }
+
+    const groups = await sock.groupFetchAllParticipating();
+
+    const groupList = Object.values(groups).map(group => ({
+      name: group.subject,
+      id: group.id,
+      participants: group.participants?.length || 0
+    }));
+
+    console.log("Senarai Group WhatsApp:", groupList);
+
+    return res.json({
+      success: true,
+      total: groupList.length,
+      groups: groupList
+    });
+  } catch (error) {
+    console.error("Gagal mendapatkan senarai kumpulan:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Gagal mendapatkan senarai kumpulan.",
+      error: error.message
+    });
+  }
+});
+
+
 // --------------------------------------------------
 // HANTAR POSTER SAHAJA
 // --------------------------------------------------
